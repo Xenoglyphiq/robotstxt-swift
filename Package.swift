@@ -15,8 +15,12 @@ let package = Package(
         .target(name: "RobotsTxtIO", dependencies: ["RobotsTxt"]),
         .testTarget(name: "RobotsTxtTests", dependencies: ["RobotsTxt", "RobotsTxtIO"]),
 
-        // Tooling: conformance runner, mutation fuzzer.
+        // Tooling: conformance runner, mutation fuzzer, benchmark, canonical examples.
         .executableTarget(name: "robotstxt-conformance", dependencies: ["RobotsTxt", "RobotsTxtIO"]),
         .executableTarget(name: "robotstxt-fuzz", dependencies: ["RobotsTxt", "RobotsTxtIO"]),
+        .executableTarget(name: "robotstxt-bench", dependencies: ["RobotsTxt"]),
+        .executableTarget(name: "check_path", dependencies: ["RobotsTxt"], path: "Examples/check_path"),
+        .executableTarget(name: "list_sitemaps", dependencies: ["RobotsTxt"], path: "Examples/list_sitemaps"),
+        .executableTarget(name: "explain_decision", dependencies: ["RobotsTxt"], path: "Examples/explain_decision"),
     ]
 )
