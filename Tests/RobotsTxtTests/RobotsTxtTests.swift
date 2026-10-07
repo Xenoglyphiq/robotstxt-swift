@@ -141,6 +141,9 @@ func truncationBoundary(maxBytes: Int, patterns: [String], truncated: Bool) {
     #expect(robots.groups[0].crawlDelay == 0.25)
     #expect(try crawlDelay(robots, userAgent: "A") == 0.25)
     #expect(try crawlDelay(robots, userAgent: "b") == nil)
+    // Too large for f64: not finite, so skipped (spec 0.1.1).
+    let huge = parse("user-agent: a\ncrawl-delay: \(String(repeating: "9", count: 400))\ncrawl-delay: 2\n")
+    #expect(huge.groups[0].crawlDelay == 2)
 }
 
 // MARK: - Groups and arguments
@@ -179,4 +182,33 @@ func truncationBoundary(maxBytes: Int, patterns: [String], truncated: Bool) {
         (599, .disallowAll), (600, .disallowAll), (.max, .disallowAll),
     ]
     for (status, policy) in table { #expect(statusPolicy(status) == policy) }
+}
+
+@Test func pruningGivesTheSameRuleAsCheckingEveryRule() throws {
+    // matchingRule skips rules that can't beat the best so far; compare with a plain
+    // scan of every rule (longest, then allow, then first in the file).
+    let file = """
+        user-agent: FooBot
+        disallow: /a
+        allow: /a*
+        disallow: /*b
+        allow: /ab
+        disallow: /a*c$
+        allow: /*
+        disallow: /abc
+        allow: /a?c
+        user-agent: FooBot
+        disallow: /*c
+        allow: /ab$
+        """
+    let robots = parse(file)
+    let rules = robots.groups.flatMap(\.rules)
+    for path in ["/", "/a", "/ab", "/abc", "/abcd", "/a?c", "/xbc", "/xc", "/b", "/aab", "/ac"] {
+        var want: Rule?
+        for r in rules where matches(pattern: r.normalized, path: normalize(path.utf8)) {
+            if let w = want, !(r.normalized.count > w.normalized.count || (r.normalized.count == w.normalized.count && r.allow && !w.allow)) { continue }
+            want = r
+        }
+        #expect(try matchingRule(robots, userAgent: "FooBot", path: path) == want, "\(path)")
+    }
 }

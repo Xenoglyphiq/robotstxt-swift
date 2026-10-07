@@ -21,7 +21,7 @@ private final class Scripted: Transport, @unchecked Sendable {
 }
 
 @Test(arguments: [
-    "http://example.com", "https://example.com/", "HTTPS://Example.com:8443", "http://127.0.0.1:8080/", "http://[::1]:80",
+    "http://example.com", "https://example.com/", "https://Example.com:8443", "http://127.0.0.1:8080/", "http://[::1]:80",
 ])
 func validOrigins(origin: String) throws {
     #expect(try robotsURL(origin: origin).path == "/robots.txt")
@@ -30,6 +30,7 @@ func validOrigins(origin: String) throws {
 @Test(arguments: [
     "", "example.com", "ftp://example.com", "https://", "https:///", "https://example.com//", "https://example.com/x",
     "https://example.com?a", "https://example.com#f", "https://user@example.com", "https://exa mple.com", "https://:80",
+    "HTTPS://example.com", "Http://example.com",
 ])
 func invalidOrigins(origin: String) async {
     await #expect(throws: RobotsError.invalidOrigin) { try await fetch(origin: origin, transport: Scripted([:])) }
@@ -42,11 +43,27 @@ func invalidOrigins(origin: String) async {
     #expect(t.requests.count == 4)  // the first request and three redirects
 }
 
-@Test func redirectToAnotherSchemeIsNotFollowed() async throws {
+@Test func redirectToAnotherSchemeGetsNoResponse() async throws {
     let t = Scripted(["https://a.example/robots.txt": TransportResponse(status: 301, location: "file:///etc/hosts")])
     let f = try await fetch(origin: "https://a.example", transport: t)
-    #expect(f.policy == .allowAll && f.status == 301)
+    #expect(f == Fetched(policy: .disallowAll, status: nil, robots: nil))
     #expect(t.requests.count == 1)
+}
+
+@Test func emptyLocationIsMissing() async throws {
+    let t = Scripted(["https://a.example/robots.txt": TransportResponse(status: 302, location: " ")])
+    #expect(try await fetch(origin: "https://a.example", transport: t) == Fetched(policy: .allowAll, status: 302, robots: nil))
+}
+
+@Test(arguments: [
+    ("/r/./x/../robots.txt", "https://a.example/r/robots.txt"), ("../../x/./robots.txt", "https://a.example/x/robots.txt"),
+    ("https://b.example/a/../robots.txt#frag", "https://b.example/robots.txt"), ("/r?x#y", "https://a.example/r?x"),
+    ("HTTP://b.example/robots.txt", "http://b.example/robots.txt"), ("//c.example/./robots.txt", "https://c.example/robots.txt"),
+])
+func locationsResolvePerRFC3986(location: String, want: String) async throws {
+    let t = Scripted(["https://a.example/robots.txt": TransportResponse(status: 301, location: location)])
+    _ = try await fetch(origin: "https://a.example", transport: t)
+    #expect(t.requests.map(\.0) == ["https://a.example/robots.txt", want])
 }
 
 @Test func bodyLimitIsPassedAndApplied() async throws {

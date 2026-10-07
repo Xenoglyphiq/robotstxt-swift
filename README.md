@@ -99,11 +99,11 @@ Errors are `RobotsError` (typed throws) with a `kind` (`invalidInput`, …) and 
 | `robotstxt.invalid_path` | The path doesn't start with `/` |
 | `robotstxt.invalid_origin` | `fetch`: not `http://` or `https://` and an authority only |
 
-The user agent is checked before the path. A failed fetch is a **policy, not an error**: no response or a 429/5xx is `disallowAll`; a 4xx, too many redirects, or a redirect with no `Location` is `allowAll`.
+The user agent is checked before the path. A failed fetch is a **policy, not an error**: no response, a 429/5xx, or a redirect to a URL that isn't http or https is `disallowAll`; a 4xx, too many redirects, or a redirect with a missing or empty `Location` is `allowAll`.
 
 **Text:** user agents, patterns and sitemaps are reported as UTF-8, with invalid bytes shown as U+FFFD. Matching uses the original bytes.
 
-**HTTP:** `URLSessionTransport` declines URLSession's automatic redirects so `fetch` can count them, only follows `http` and `https` targets, sends `Accept-Encoding: identity`, and stops reading the body after `maxBytes + 1` bytes.
+**HTTP:** `fetch` resolves each `Location` against the current URL per RFC 3986 (dot segments removed, fragment dropped) and follows it itself, so `URLSessionTransport` declines URLSession's automatic redirects. It sends `Accept-Encoding: identity` and stops reading the body after `maxBytes + 1` bytes.
 
 ## Modules
 

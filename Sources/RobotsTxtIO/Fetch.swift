@@ -80,8 +80,9 @@ public struct Fetched: Sendable, Hashable {
 /// `limits.maxRedirects` redirects, applies `statusPolicy` and parses a 2xx body
 /// (at most `limits.maxBytes + 1` bytes are read).
 ///
-/// A failed fetch is a policy, not an error: no response is `.disallowAll`; too many
-/// redirects, or a redirect without a usable `Location`, is `.allowAll` (D-007).
+/// A failed fetch is a policy, not an error: no response, or a redirect to a URL that
+/// isn't http or https, is `.disallowAll` with no status; too many redirects, or a
+/// redirect with a missing or empty `Location`, is `.allowAll` (D-007).
 ///
 /// - Parameters:
 ///   - origin: `http://` or `https://` and an authority (host and optional port), with
@@ -102,12 +103,18 @@ public func fetch(
         case .parse:
             return Fetched(policy: .parsed, status: response.status, robots: parse(response.body, limits: limits))
         case .followRedirect:
-            guard redirects < limits.maxRedirects,
-                  let location = response.location, let next = redirectTarget(location, from: url) else {
+            guard redirects < limits.maxRedirects else {
                 return Fetched(policy: .allowAll, status: response.status, robots: nil)
             }
-            redirects += 1
-            url = next
+            switch redirectTarget(response.location, from: url) {
+            case .missing:
+                return Fetched(policy: .allowAll, status: response.status, robots: nil)
+            case .unrequestable:
+                return Fetched(policy: .disallowAll, status: nil, robots: nil)
+            case .url(let next):
+                redirects += 1
+                url = next
+            }
         case .allowAll:
             return Fetched(policy: .allowAll, status: response.status, robots: nil)
         case .disallowAll:
@@ -116,20 +123,35 @@ public func fetch(
     }
 }
 
-/// `Location` resolved against the current URL. Only http and https targets are
-/// followed; anything else is treated like a redirect with no `Location`.
-private func redirectTarget(_ location: String, from current: URL) -> URL? {
-    guard let next = URL(string: location, relativeTo: current)?.absoluteURL,
-          let scheme = next.scheme?.lowercased(), scheme == "http" || scheme == "https",
-          let host = next.host, !host.isEmpty else { return nil }
-    return next
+private enum RedirectTarget {
+    /// No `Location`, or an empty one: the file is unavailable (D-007).
+    case missing
+    /// A `Location` that isn't an http or https URL (or doesn't parse): nothing to
+    /// request, so there's no response.
+    case unrequestable
+    case url(URL)
+}
+
+/// `Location` resolved against the current URL per RFC 3986 §5.2: dot segments
+/// removed, the fragment dropped, the scheme lower-cased.
+private func redirectTarget(_ location: String?, from current: URL) -> RedirectTarget {
+    let trimmed = (location ?? "").trimmingCharacters(in: CharacterSet(charactersIn: " \t"))
+    if trimmed.isEmpty { return .missing }
+    guard let resolved = URL(string: trimmed, relativeTo: current)?.absoluteURL.standardized,
+          var parts = URLComponents(url: resolved, resolvingAgainstBaseURL: false),
+          let scheme = parts.scheme?.lowercased(), scheme == "http" || scheme == "https",
+          let host = parts.host, !host.isEmpty else { return .unrequestable }
+    parts.scheme = scheme
+    parts.fragment = nil
+    guard let next = parts.url else { return .unrequestable }
+    return .url(next)
 }
 
 /// `origin + /robots.txt`, after checking that `origin` is scheme and authority only.
 func robotsURL(origin: String) throws(RobotsError) -> URL {
-    let lower = origin.lowercased()
+    // Lower-case schemes only, as every port of the spec does.
     let scheme: String
-    if lower.hasPrefix("http://") { scheme = "http" } else if lower.hasPrefix("https://") { scheme = "https" } else {
+    if origin.hasPrefix("http://") { scheme = "http" } else if origin.hasPrefix("https://") { scheme = "https" } else {
         throw .invalidOrigin
     }
     var authority = origin.utf8.dropFirst(scheme.utf8.count + 3)

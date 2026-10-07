@@ -148,7 +148,7 @@ private struct Parser {
         }
     }
 
-    /// A non-negative decimal, `[0-9]+(\.[0-9]+)?`, as seconds; nil for anything else.
+    /// A non-negative decimal, `[0-9]+(\.[0-9]+)?`, finite as an f64, in seconds; nil otherwise.
     static func decimal(_ s: Slice) -> Double? {
         var i = s.startIndex
         func digits() -> Int {
@@ -162,6 +162,8 @@ private struct Parser {
             i += 1
             guard digits() > 0, i == s.endIndex else { return nil }
         }
-        return Double(String(decoding: s, as: UTF8.self))
+        // Correctly rounded; a value too large for f64 isn't finite and is skipped.
+        guard let value = Double(String(decoding: s, as: UTF8.self)), value.isFinite else { return nil }
+        return value
     }
 }
