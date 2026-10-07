@@ -35,8 +35,11 @@ jobs:
         run: FUZZ_SECONDS=30 swift run -c release robotstxt-fuzz
 
   macos:
-    # Private repo: macOS jobs run on the org's self-hosted Mac, not 10x-billed hosted runners.
-    runs-on: [self-hosted, macOS, ARM64, swift]
+    # Public repo: GitHub-hosted runners only, never self-hosted (anyone can open a PR).
+    # Skipped while the repo is private, where hosted macOS bills at 10x; merge this
+    # right before making the repo public.
+    if: ${{ !github.event.repository.private }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - name: Build and unit tests
