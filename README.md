@@ -6,8 +6,9 @@ Swift tools 6.0 · iOS 16 / macOS 13 / Linux. **No dependencies.** The core work
 
 ## Install
 
-> **Not released yet.** Until the first release, depend on `main`:
-> `.package(url: "https://github.com/Xenoglyphiq/robotstxt-swift", branch: "main")`
+```swift
+.package(url: "https://github.com/Xenoglyphiq/robotstxt-swift", from: "0.1.0")
+```
 
 Then add `RobotsTxt` (core) and/or `RobotsTxtIO` (`fetch`) to your target.
 
