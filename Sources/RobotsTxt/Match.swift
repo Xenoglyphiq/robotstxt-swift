@@ -143,20 +143,33 @@ private func matches(_ p: UnsafeBufferPointer<UInt8>, _ s: UnsafeBufferPointer<U
 
 @inline(__always) private func lower(_ b: UInt8) -> UInt8 { b >= 0x41 && b <= 0x5A ? b | 0x20 : b }
 
-private enum GroupToken {
-    case global
-    case name(ArraySlice<UInt8>)
-
-    /// D-001: `*` alone or followed by a space or tab is global; otherwise the
-    /// value's longest `[A-Za-z_-]` prefix (possibly empty, which matches nothing).
-    init(_ value: String) {
-        let u = Array(value.utf8)
-        if u.first == star, u.count == 1 || u[1] == 0x20 || u[1] == 0x09 {
-            self = .global
-        } else {
-            self = .name(u.prefix(while: isTokenByte))
+/// How a group relates to a crawler: it names the crawler's token, it's global, or neither.
+///
+/// D-001: a `user-agent` value of `*` alone or followed by a space or tab is global;
+/// otherwise its token is the longest `[A-Za-z_-]` prefix (possibly empty, which matches
+/// nothing), compared with the crawler's ignoring ASCII case. Works on the UTF-8 views
+/// directly: this runs for every group on every lookup, so it doesn't allocate.
+private func relation(_ group: Group, to agent: [UInt8]) -> (named: Bool, global: Bool) {
+    var global = false
+    for ua in group.userAgents {
+        var it = ua.utf8.makeIterator()
+        guard let first = it.next() else { continue }
+        if first == star {
+            let second = it.next()
+            if second == nil || second == 0x20 || second == 0x09 { global = true }
+            continue
         }
+        // Token prefix equal to the agent: same bytes (ignoring case), then a non-token byte or the end.
+        var i = 0
+        var b: UInt8? = first
+        while let c = b, isTokenByte(c) {
+            guard i < agent.count, lower(c) == lower(agent[i]) else { break }
+            i += 1
+            b = it.next()
+        }
+        if i == agent.count, b.map({ !isTokenByte($0) }) ?? true { return (true, global) }
     }
+    return (false, global)
 }
 
 /// D-003: the crawler's user agent must be a product token, `[A-Za-z_-]+`.
@@ -166,23 +179,14 @@ private func validUserAgent(_ userAgent: String) throws(RobotsError) -> [UInt8] 
     return u
 }
 
-/// The crawler's groups in file order: every group naming its token (ASCII case
-/// ignored), or, only if there are none, the global groups (D-002).
-private func groups(for agent: [UInt8], in robots: RobotsFile) -> [Group] {
-    var own: [Group] = [], global: [Group] = []
+/// Calls `body` with the crawler's groups in file order: every group naming its token
+/// (ASCII case ignored), or, only if there are none, the global groups (D-002).
+@inline(__always) private func forEachGroup(for agent: [UInt8], in robots: RobotsFile, _ body: (Group) -> Void) {
+    let own = robots.groups.contains { relation($0, to: agent).named }
     for g in robots.groups {
-        var named = false, isGlobal = false
-        for ua in g.userAgents {
-            switch GroupToken(ua) {
-            case .global:
-                isGlobal = true
-            case .name(let t):
-                if t.count == agent.count, zip(t, agent).allSatisfy({ lower($0) == lower($1) }) { named = true }
-            }
-        }
-        if named { own.append(g) } else if isGlobal { global.append(g) }
+        let r = relation(g, to: agent)
+        if own ? r.named : r.global { body(g) }
     }
-    return own.isEmpty ? global : own
 }
 
 // MARK: - Operations
@@ -196,23 +200,23 @@ private func groups(for agent: [UInt8], in robots: RobotsFile) -> [Group] {
 /// - Throws: `robotstxt.invalid_user_agent`, then `robotstxt.invalid_path`, checked in that order.
 public func matchingRule(_ robots: RobotsFile, userAgent: String, path: String) throws(RobotsError) -> Rule? {
     let agent = try validUserAgent(userAgent)
-    var p = Array(path.utf8)
-    guard p.first == 0x2F else { throw .invalidPath }
-    if let fragment = p.firstIndex(of: 0x23) { p.removeSubrange(fragment...) }
+    guard path.utf8.first == 0x2F else { throw .invalidPath }
+    let p = path.utf8.prefix(while: { $0 != 0x23 })  // a fragment is ignored
 
     // RFC 9309 §2.2.2: /robots.txt is always allowed.
     if p.prefix(while: { $0 != 0x3F }).elementsEqual("/robots.txt".utf8) { return nil }
 
     let normalizedPath = normalize(p)
     var best: Rule?
-    for group in groups(for: agent, in: robots) {
-        for rule in group.rules where matches(pattern: rule.normalized, path: normalizedPath) {
-            guard let b = best else { best = rule; continue }
+    forEachGroup(for: agent, in: robots) { group in
+        for rule in group.rules {
             // Longest pattern wins; on a tie allow beats disallow; else the first in the file.
-            if rule.normalized.count > b.normalized.count
-                || (rule.normalized.count == b.normalized.count && rule.allow && !b.allow) {
-                best = rule
+            // So a rule that couldn't replace the current best isn't matched at all.
+            if let b = best {
+                let n = rule.normalized.count, m = b.normalized.count
+                guard n > m || (n == m && rule.allow && !b.allow) else { continue }
             }
+            if matches(pattern: rule.normalized, path: normalizedPath) { best = rule }
         }
     }
     return best
@@ -232,7 +236,11 @@ public func isAllowed(_ robots: RobotsFile, userAgent: String, path: String) thr
 /// - Throws: `robotstxt.invalid_user_agent`.
 public func crawlDelay(_ robots: RobotsFile, userAgent: String) throws(RobotsError) -> Double? {
     let agent = try validUserAgent(userAgent)
-    return groups(for: agent, in: robots).lazy.compactMap(\.crawlDelay).first
+    var delay: Double?
+    forEachGroup(for: agent, in: robots) { group in
+        if delay == nil { delay = group.crawlDelay }
+    }
+    return delay
 }
 
 /// Spec operation `status_policy`: what the HTTP status of a `/robots.txt` fetch means.
