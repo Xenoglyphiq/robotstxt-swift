@@ -1,6 +1,6 @@
 # robots.txt for Swift
 
-Parse robots.txt files and decide whether a crawler may fetch a path: which rule decided, sitemap URLs, what an HTTP status means for the file, and fetching it over HTTP. Implements [RFC 9309](https://www.rfc-editor.org/rfc/rfc9309.html) · Spec v0.1.0 · Conformance: **core ✓ io ✓ full ✓** (125/125)
+Parse robots.txt files and decide whether a crawler may fetch a path: which rule decided, sitemap URLs, what an HTTP status means for the file, and fetching it over HTTP. Implements [RFC 9309](https://www.rfc-editor.org/rfc/rfc9309.html) · Spec v0.1.2 · Conformance: **core ✓ io ✓ full ✓** (130/130)
 
 Swift tools 6.0 · iOS 16 / macOS 13 / Linux. **No dependencies.** The core works on UTF-8 bytes with a hand-written matcher (no `Regex`, no Foundation), so it behaves the same on every platform.
 
@@ -123,7 +123,11 @@ The user agent is checked before the path. A failed fetch is a **policy, not an 
 
 ## Performance
 
-Not recorded yet. The spec's bench input arrives with spec 0.1.1; timings against the reference will be recorded here before the first release.
+| Benchmark | Reference | This port | Ratio |
+|---|---|---|---|
+| `parse` + `isAllowed` pass | Rust `texting_robots` 0.2.2: 13.10 ms | 24.33 ms | 1.86× |
+
+One pass parses the 79,936-byte `bench/robots.txt` once per crawler (10 times) and checks 10,000 paths; method in `.spec/bench/README.md`. Recorded 2026-10-06 on an Apple M5 Pro, interleaved with the reference in one session (median of three rounds); checksum 24281055 reproduced every pass. Swift 6.4, `-c release`. One profiled optimization pass (allocation-free group selection, skipping rules too short to win) took it from 2.9× to here.
 
 ## Why not CanProceed?
 
@@ -131,4 +135,4 @@ Not recorded yet. The spec's bench input arrives with spec 0.1.1; timings agains
 
 ## License
 
-MIT OR Apache-2.0
+MIT OR Apache-2.0. Some conformance cases in `.spec/` are translated from Google's `robotstxt` tests (Apache-2.0); see `.spec/NOTICE`.
