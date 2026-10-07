@@ -11,8 +11,12 @@ private final class Scripted: Transport, @unchecked Sendable {
     init(_ responses: [String: TransportResponse]) { self.responses = responses }
 
     func get(_ url: URL, maxBodyBytes: Int) async -> TransportResponse? {
-        lock.withLock { requests.append((url.absoluteString, maxBodyBytes)) }
+        record(url.absoluteString, maxBodyBytes)
         return responses[url.absoluteString]
+    }
+
+    private func record(_ url: String, _ maxBodyBytes: Int) {
+        lock.lock(); requests.append((url, maxBodyBytes)); lock.unlock()
     }
 }
 

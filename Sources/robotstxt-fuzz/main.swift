@@ -149,10 +149,11 @@ final class FuzzTransport: Transport, @unchecked Sendable {
     let responses: [String: TransportResponse]
     private let lock = NSLock()
     private var count = 0
-    var requests: Int { lock.withLock { count } }
+    var requests: Int { lock.lock(); defer { lock.unlock() }; return count }
+    private func bump() { lock.lock(); count += 1; lock.unlock() }
     init(_ responses: [String: TransportResponse]) { self.responses = responses }
     func get(_ url: URL, maxBodyBytes: Int) async -> TransportResponse? {
-        lock.withLock { count += 1 }
+        bump()
         guard let r = responses[url.absoluteString] else { return nil }
         return TransportResponse(status: r.status, location: r.location, body: Array(r.body.prefix(maxBodyBytes)))
     }
