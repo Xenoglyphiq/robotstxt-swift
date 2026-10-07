@@ -1,5 +1,6 @@
-// Mutation fuzzer for everything that takes untrusted input: parse, and isAllowed /
-// matchingRule / crawlDelay on the parsed result with mutated user agents and paths.
+// Mutation fuzzer for everything that takes untrusted input: parse; isAllowed /
+// matchingRule / crawlDelay on the parsed result with mutated user agents and paths;
+// and fetch, over a scripted transport with random statuses, Locations and bodies.
 // Shared design: corpus = the conformance inputs; 1-4 random mutations per iteration;
 // time-boxed.
 //
@@ -12,10 +13,13 @@
 // - only the declared errors, exactly when the spec says, user agent before path;
 // - isAllowed == (matchingRule == nil || rule.allow), and the rule is one of the file's;
 // - truncated iff the input is longer than maxBytes; rule lines increase through the file;
-// - crawlDelay is nil or a non-negative number.
+// - crawlDelay is nil or a non-negative number;
+// - fetch throws only invalid_origin, stops within maxRedirects, and its policy, status
+//   and robots agree with statusPolicy.
 
 import Foundation
 import RobotsTxt
+import RobotsTxtIO
 
 let seconds = Double(ProcessInfo.processInfo.environment["FUZZ_SECONDS"] ?? "10") ?? 10
 let seed = UInt64(ProcessInfo.processInfo.environment["FUZZ_SEED"] ?? "") ?? UInt64(Date().timeIntervalSince1970 * 1000)
@@ -138,6 +142,60 @@ func pickPath(_ robots: RobotsFile, _ rng: inout Rng) -> String {
     return String(decoding: p, as: UTF8.self)
 }
 
+// MARK: fetch
+
+/// Answers from a map and counts requests.
+final class FuzzTransport: Transport, @unchecked Sendable {
+    let responses: [String: TransportResponse]
+    private let lock = NSLock()
+    private var count = 0
+    var requests: Int { lock.withLock { count } }
+    init(_ responses: [String: TransportResponse]) { self.responses = responses }
+    func get(_ url: URL, maxBodyBytes: Int) async -> TransportResponse? {
+        lock.withLock { count += 1 }
+        guard let r = responses[url.absoluteString] else { return nil }
+        return TransportResponse(status: r.status, location: r.location, body: Array(r.body.prefix(maxBodyBytes)))
+    }
+}
+
+let origins = ["https://a.example", "http://a.example/", "https://b.example", "HTTPS://A.EXAMPLE", "https://a.example:8443"]
+let urls = ["https://a.example/robots.txt", "http://a.example/robots.txt", "https://b.example/robots.txt",
+            "https://a.example/r1", "https://a.example/r2", "https://a.example:8443/robots.txt"]
+let locations = ["/robots.txt", "/r1", "r2", "https://b.example/robots.txt", "http://a.example/robots.txt", "//b.example/robots.txt",
+                 "file:///etc/hosts", "javascript:x", "", " ", "https://", "/r1?x#y", "https://a.example:8443/robots.txt"]
+let statuses: [UInt32] = [200, 204, 301, 302, 307, 308, 404, 403, 429, 500, 503, 0, 99, 199, 399, 600]
+
+func fuzzFetch(_ body: [UInt8], seed: UInt64) async {
+    var rng = Rng(state: seed)
+    var responses: [String: TransportResponse] = [:]
+    for url in urls where rng.below(5) > 0 {
+        let status = rng.below(8) == 0 ? UInt32(truncatingIfNeeded: rng.next()) : statuses[rng.below(statuses.count)]
+        var location: String? = rng.below(6) == 0 ? nil : locations[rng.below(locations.count)]
+        if let l = location, rng.below(4) == 0 { location = String(decoding: mutate(Array(l.utf8), &rng).prefix(64), as: UTF8.self) }
+        responses[url] = TransportResponse(status: status, location: location, body: body)
+    }
+    var origin = origins[rng.below(origins.count)]
+    if rng.below(4) == 0 { origin = String(decoding: mutate(Array(origin.utf8), &rng).prefix(64), as: UTF8.self) }
+    let limits = Limits(maxBytes: rng.below(2) == 0 ? 512_000 : UInt64(rng.below(body.count + 2)), maxRedirects: UInt32(rng.below(7)))
+    let transport = FuzzTransport(responses)
+    do {
+        let f = try await fetch(origin: origin, transport: transport, limits: limits)
+        precondition(transport.requests <= Int(limits.maxRedirects) + 1, "too many requests")
+        precondition((f.policy == .parsed) == (f.robots != nil), "robots without parsed")
+        if let s = f.status {
+            switch f.policy {
+            case .parsed: precondition(statusPolicy(s) == .parse, "parsed a \(s)")
+            case .allowAll: precondition([.allowAll, .followRedirect].contains(statusPolicy(s)), "allow_all on \(s)")
+            case .disallowAll: precondition(statusPolicy(s) == .disallowAll, "disallow_all on \(s)")
+            }
+        } else {
+            precondition(f.policy == .disallowAll, "no status but \(f.policy)")
+        }
+    } catch {
+        precondition(error == .invalidOrigin && transport.requests == 0, "fetch threw \(error)")
+    }
+}
+
 let deadline = Date().addingTimeInterval(seconds)
 var iterations = 0
 while Date() < deadline {
@@ -178,6 +236,7 @@ while Date() < deadline {
             }
         }
         _ = statusPolicy(UInt32(truncatingIfNeeded: rng.next()))
+        if iterations % 8 == 0 { await fuzzFetch(input, seed: rng.next()) }
     }
 }
 say("fuzz: \(iterations) iterations in \(seconds) s, clean")

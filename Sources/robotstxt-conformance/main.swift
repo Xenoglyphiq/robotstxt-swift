@@ -4,6 +4,7 @@
 
 import Foundation
 import RobotsTxt
+import RobotsTxtIO
 
 /// Canonical JSON (`.kit/CONVENTIONS.md` §5). Decoded with JSONDecoder, which keeps
 /// booleans and numbers apart identically on Apple platforms and Linux.
@@ -97,6 +98,26 @@ func limits(_ options: JSON?) -> Limits {
     return l
 }
 
+/// The transport a fetch case scripts: `responses` maps each URL to `{"status",
+/// "location"?, "body_base64"?}` or `{"error": "network"}`; an unlisted URL has no response.
+struct ScriptedTransport: Transport {
+    let responses: [String: JSON]
+
+    func get(_ url: URL, maxBodyBytes: Int) async -> TransportResponse? {
+        guard let r = responses[url.absoluteString], r["error"] == nil, let status = r["status"]?.u64 else { return nil }
+        let body = r["body_base64"]?.string.flatMap { Data(base64Encoded: $0) }.map { [UInt8]($0) } ?? []
+        return TransportResponse(status: UInt32(status), location: r["location"]?.string, body: Array(body.prefix(maxBodyBytes)))
+    }
+}
+
+func fetchedJSON(_ f: Fetched) -> JSON {
+    .object([
+        "policy": .string(f.policy.rawValue),
+        "status": f.status.map { .number(Double($0)) } ?? .null,
+        "robots": f.robots.map(robotsJSON) ?? .null,
+    ])
+}
+
 // MARK: run
 
 func run(_ c: JSON) async -> Result<JSON, RobotsError> {
@@ -119,6 +140,10 @@ func run(_ c: JSON) async -> Result<JSON, RobotsError> {
             return .success(try crawlDelay(robots, userAgent: args!["user_agent"]!.string!).map(JSON.number) ?? .null)
         case "status_policy":
             return .success(.string(statusPolicy(UInt32(input["value"]!.u64!)).rawValue))
+        case "fetch":
+            let v = input["value"]!
+            let transport = ScriptedTransport(responses: v["responses"]?.object ?? [:])
+            return .success(fetchedJSON(try await fetch(origin: v["origin"]!.string!, transport: transport, limits: opts)))
         default:
             return .failure(RobotsError(.internal, "runner.unknown_op"))
         }
